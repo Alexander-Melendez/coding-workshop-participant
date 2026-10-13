@@ -1,35 +1,59 @@
-import { useState } from 'react'
-import reactLogo from '/react.svg'
-import viteLogo from '/vite.svg'
-import './App.css'
+import { RouterProvider, useRouter } from './lib/router.jsx';
+import { resolveRoute } from './lib/routes.js';
+import { AuthProvider, useAuth } from './services/auth.jsx';
+import { ToastProvider } from './components/Toasts.jsx';
+import Layout from './components/Layout.jsx';
+import { Loading } from './components/States.jsx';
+import LoginPage from './pages/LoginPage.jsx';
+import DashboardPage from './pages/DashboardPage.jsx';
+import ProjectsPage from './pages/ProjectsPage.jsx';
+import ProjectDetailPage from './pages/ProjectDetailPage.jsx';
+import PeoplePage from './pages/PeoplePage.jsx';
+import TimePage from './pages/TimePage.jsx';
+import AuditLogPage from './pages/AuditLogPage.jsx';
+import ProfilePage from './pages/ProfilePage.jsx';
+import NotFoundPage from './pages/NotFoundPage.jsx';
 
-function App() {
-  const [count, setCount] = useState(0)
+/**
+ * Routes and the roles allowed on each. Hiding a page here is a UX choice;
+ * the API enforces the same rules on every request.
+ */
+const ROUTES = [
+  { path: '/', component: DashboardPage },
+  { path: '/projects', component: ProjectsPage },
+  { path: '/projects/:id', component: ProjectDetailPage },
+  { path: '/people', component: PeoplePage, roles: ['admin', 'manager'] },
+  { path: '/time', component: TimePage },
+  { path: '/audit', component: AuditLogPage, roles: ['admin'] },
+  { path: '/profile', component: ProfilePage },
+];
 
+function CurrentPage() {
+  const { user, status } = useAuth();
+  const { pathname } = useRouter();
+
+  if (status === 'loading') return <Loading label="Signing you in…" />;
+  if (!user) return <LoginPage />;
+
+  const match = resolveRoute(ROUTES, pathname);
+  const allowed = match && (!match.route.roles || match.route.roles.includes(user.role));
+  const Page = allowed ? match.route.component : NotFoundPage;
   return (
-    <>
-      <div>
-        <a href="https://vite.dev" target="_blank">
-          <img src={viteLogo} className="logo" alt="Vite logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <h1>Vite + React</h1>
-      <div className="card">
-        <button onClick={() => setCount((count) => count + 1)}>
-          count is {count}
-        </button>
-        <p>
-          Edit <code>src/App.jsx</code> and save to test HMR
-        </p>
-      </div>
-      <p className="read-the-docs">
-        Click on the Vite and React logos to learn more
-      </p>
-    </>
-  )
+    <Layout>
+      <Page params={match?.params || {}} />
+    </Layout>
+  );
 }
 
-export default App
+/** Root component: providers + current page. */
+export default function App() {
+  return (
+    <RouterProvider>
+      <ToastProvider>
+        <AuthProvider>
+          <CurrentPage />
+        </AuthProvider>
+      </ToastProvider>
+    </RouterProvider>
+  );
+}

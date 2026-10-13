@@ -1,0 +1,159 @@
+"""Request bodies, validated by Pydantic before a route runs.
+
+These check shape and simple limits (required, types, lengths, ranges).
+Rules that need the database (dates inside the project, one milestone at
+a time, 40 hours a week...) live in the services.
+
+Unknown fields are rejected (extra="forbid") so a typo like "titel" is an
+error instead of being silently ignored.
+"""
+
+import re
+from datetime import date
+from decimal import Decimal
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+class Body(BaseModel):
+    """Base for every request body: trims spaces, rejects unknown fields."""
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+
+def check_email(value: str | None) -> str | None:
+    """Lower-case and validate an email address."""
+    if value is None:
+        return None
+    if not EMAIL_PATTERN.match(value):
+        raise ValueError("Enter a valid email address")
+    return value.lower()
+
+
+# --- auth -----------------------------------------------------------------
+class LoginRequest(Body):
+    username: str = Field(min_length=1, description="Username or email")
+    password: str = Field(min_length=1)
+
+    model_config = ConfigDict(json_schema_extra={"example": {"username": "admin", "password": "Admin@123"}})
+
+
+class RefreshRequest(Body):
+    refresh_token: str = Field(min_length=1)
+
+
+class ProfileUpdate(Body):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    email: str | None = None
+
+    _email = field_validator("email")(check_email)
+
+
+class PasswordChange(Body):
+    current_password: str = Field(min_length=1)
+    new_password: str = Field(min_length=8, max_length=200)
+
+
+# --- users ----------------------------------------------------------------
+class UserCreate(Body):
+    name: str = Field(min_length=1, max_length=120)
+    username: str = Field(pattern=r"^[A-Za-z0-9._-]{3,40}$")
+    email: str
+    role: Literal["admin", "manager", "employee"]
+    title: str | None = Field(default=None, max_length=80)
+    salary: Decimal = Field(default=Decimal(0), ge=0, le=10_000_000, decimal_places=2)
+    manager_id: int | None = None
+
+    _email = field_validator("email")(check_email)
+
+    model_config = ConfigDict(json_schema_extra={"example": {
+        "name": "Eve Adams", "username": "eve", "email": "eve@acme.example", "role": "employee",
+        "title": "Systems engineer", "salary": 98800, "manager_id": 2}})
+
+
+class UserUpdate(Body):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    username: str | None = Field(default=None, pattern=r"^[A-Za-z0-9._-]{3,40}$")
+    email: str | None = None
+    role: Literal["admin", "manager", "employee"] | None = None
+    title: str | None = Field(default=None, max_length=80)
+    salary: Decimal | None = Field(default=None, ge=0, le=10_000_000, decimal_places=2)
+    manager_id: int | None = None
+
+    _email = field_validator("email")(check_email)
+
+
+# --- projects -------------------------------------------------------------
+class ProjectCreate(Body):
+    title: str = Field(min_length=1, max_length=150)
+    description: str | None = Field(default=None, max_length=2000)
+    start_date: date
+    end_date: date
+    budget: Decimal = Field(ge=0, le=100_000_000_000, decimal_places=2)
+    estimated_hours: Decimal = Field(default=Decimal(0), ge=0, le=1_000_000, decimal_places=2)
+    manager_id: int
+
+    model_config = ConfigDict(json_schema_extra={"example": {
+        "title": "Data center decommission", "description": "Retire 1,000 servers",
+        "start_date": "2026-10-01", "end_date": "2027-09-30", "budget": 450000,
+        "estimated_hours": 6000, "manager_id": 2}})
+
+
+class ProjectUpdate(Body):
+    title: str | None = Field(default=None, min_length=1, max_length=150)
+    description: str | None = Field(default=None, max_length=2000)
+    start_date: date | None = None
+    end_date: date | None = None
+    budget: Decimal | None = Field(default=None, ge=0, le=100_000_000_000, decimal_places=2)
+    estimated_hours: Decimal | None = Field(default=None, ge=0, le=1_000_000, decimal_places=2)
+    budget_change_reason: str | None = Field(default=None, max_length=500)
+
+
+class ManagerChange(Body):
+    manager_id: int
+
+
+# --- milestones and assignments --------------------------------------------
+class MilestoneCreate(Body):
+    title: str = Field(min_length=1, max_length=150)
+    description: str | None = Field(default=None, max_length=2000)
+    start_date: date
+    end_date: date
+
+
+class MilestoneUpdate(Body):
+    title: str | None = Field(default=None, min_length=1, max_length=150)
+    description: str | None = Field(default=None, max_length=2000)
+    start_date: date | None = None
+    end_date: date | None = None
+
+
+class AssignmentCreate(Body):
+    user_id: int = Field(description="The employee's user ID")
+    start_date: date
+    end_date: date
+
+
+class AssignmentUpdate(Body):
+    start_date: date | None = None
+    end_date: date | None = None
+
+
+# --- time ------------------------------------------------------------------
+class TimeEntryCreate(Body):
+    milestone_id: int
+    work_date: date
+    hours: Decimal = Field(gt=0, le=8, multiple_of=Decimal("0.25"))
+    note: str | None = Field(default=None, max_length=500)
+
+    model_config = ConfigDict(json_schema_extra={"example": {
+        "milestone_id": 1, "work_date": "2026-10-13", "hours": 8, "note": "Unracked 12 servers"}})
+
+
+class TimeEntryUpdate(Body):
+    work_date: date | None = None
+    hours: Decimal | None = Field(default=None, gt=0, le=8, multiple_of=Decimal("0.25"))
+    note: str | None = Field(default=None, max_length=500)

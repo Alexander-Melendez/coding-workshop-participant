@@ -38,7 +38,8 @@ const server = http.createServer((req, res) => {
   // Enable CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', '*');
+  // Authorization is never covered by the '*' wildcard, so list it explicitly
+  res.setHeader('Access-Control-Allow-Headers', 'Authorization, X-Auth-Token, Content-Type, *');
   res.setHeader('Access-Control-Max-Age', '86400');
 
   // Handle preflight
@@ -64,7 +65,11 @@ const server = http.createServer((req, res) => {
 
   const endpointName = pathParts[1];
   const remainingPath = pathParts.length > 2 ? '/' + pathParts.slice(2).join('/') : '';
-  const targetUrl = endpoints[endpointName] + remainingPath + (parsedUrl.search || '');
+  // Check the endpoint exists before building the URL (otherwise it becomes "undefined/...")
+  // Lambda URLs end in "/", so trim it to avoid "//path"
+  const targetUrl = endpoints[endpointName]
+    ? endpoints[endpointName].replace(/\/+$/, '') + remainingPath + (parsedUrl.search || '')
+    : null;
 
   if (!targetUrl) {
     res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -101,7 +106,11 @@ const server = http.createServer((req, res) => {
       'accept': headers.accept || 'application/json',
       'content-type': headers['content-type'] || 'application/json',
       'user-agent': headers['user-agent'] || 'proxy-server',
-      'host': target.host
+      'host': target.host,
+      // Forward auth headers so token-protected endpoints work locally
+      ...(headers.authorization ? { 'authorization': headers.authorization } : {}),
+      ...(headers['x-auth-token'] ? { 'x-auth-token': headers['x-auth-token'] } : {}),
+      ...(headers['content-length'] ? { 'content-length': headers['content-length'] } : {})
     }
   };
 
