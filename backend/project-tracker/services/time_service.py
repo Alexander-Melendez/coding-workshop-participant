@@ -1,8 +1,9 @@
 """Time entries: hours employees log on the milestone they're assigned to.
 
 Rules: at most 8 hours a day (one entry per day), at most 40 a week, not in
-the future, only on dates the employee is assigned to that milestone, and
-never on a completed milestone or closed project. The hourly rate is saved
+the future, only on dates the employee is assigned to that milestone, never
+before the milestones it depends on are complete, and never on a completed
+milestone or closed project. The hourly rate is saved
 with each entry (salary / 2080), so a later raise doesn't change past costs.
 """
 
@@ -46,7 +47,13 @@ def _check_rules(db: Database, employee_id: int, milestone_id: int, work_date: d
                  except_id: int = 0) -> None:
     if work_date > date.today():
         raise BadRequest("You can't log time in the future", {"work_date": "Can't be in the future"})
-    if not MilestoneRepository(db).is_assigned_on(employee_id, milestone_id, work_date):
+    milestones = MilestoneRepository(db)
+    waiting = [p["title"] for p in milestones.predecessors(milestone_id) if p["completed_at"] is None]
+    if waiting:
+        names = ", ".join(f"'{title}'" for title in waiting)
+        raise BadRequest(f"This milestone can't start until {names} is complete",
+                         {"milestone_id": "Waiting on an earlier milestone"})
+    if not milestones.is_assigned_on(employee_id, milestone_id, work_date):
         raise BadRequest("You aren't assigned to this milestone on that date",
                          {"work_date": "You aren't assigned to this milestone on that date"})
     entries = TimeEntryRepository(db)

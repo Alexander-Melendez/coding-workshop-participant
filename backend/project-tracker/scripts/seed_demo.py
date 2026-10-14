@@ -53,18 +53,23 @@ def login(username: str, password: str) -> str:
     return call("POST", "/auth/login", {"username": username, "password": password})["access_token"]
 
 
-def create_person(admin: str, name: str, username: str, role: str, job: str, salary: int,
+def create_person(admin: str, name: str, handle: str, role: str, job: str, salary: int,
                   manager_id: int | None = None) -> dict:
-    """Create a user, set the demo password, return {'id', 'token'}."""
-    body = {"name": name, "username": username, "email": f"{username}@acme.example", "role": role}
+    """Create a user, set the demo password, return {'id', 'token'}.
+
+    The server generates the username, so the demo signs in with the email.
+    """
+    email = f"{handle}@acme.example"
+    body = {"name": name, "email": email, "role": role}
     if role == "employee":
         body.update({"title": job, "salary": salary, "manager_id": manager_id})
     created = call("POST", "/users", body, admin)
-    token = login(username, created["temporary_password"])
+    token = login(email, created["temporary_password"])
     call("POST", "/auth/change-password",
          {"current_password": created["temporary_password"], "new_password": DEMO_PASSWORD}, token)
-    print(f"  {created['user']['display_id']}  {name:<14} {role:<9} login: {username} / {DEMO_PASSWORD}")
-    return {"id": created["user"]["id"], "token": login(username, DEMO_PASSWORD)}
+    print(f"  {created['user']['display_id']}  {name:<14} {role:<9} "
+          f"login: {email} (or {created['user']['username']}) / {DEMO_PASSWORD}")
+    return {"id": created["user"]["id"], "token": login(email, DEMO_PASSWORD)}
 
 
 def log_weekdays(employee: dict, milestone_id: int, start: int, end: int, hours: float = 8) -> int:
@@ -84,8 +89,8 @@ def main() -> None:
     print(f"Seeding {BASE}")
     admin = login(ADMIN_USER, ADMIN_PASSWORD)
     existing = call("GET", "/users", token=admin)
-    if any(u["username"] == "maria" for u in existing):
-        raise SystemExit("Demo data already exists (user 'maria'). Nothing to do.")
+    if any(u["email"] == "maria@acme.example" for u in existing):
+        raise SystemExit("Demo data already exists (maria@acme.example). Nothing to do.")
 
     print("People:")
     maria = create_person(admin, "Maria Lopez", "maria", "manager", "Infrastructure manager", 145600)
@@ -102,9 +107,10 @@ def main() -> None:
             "budget": budget, "estimated_hours": hours, "manager_id": manager_id,
         }, admin)["id"]
 
-    def milestone(token: str, project_id: int, title: str, desc: str, start: int, end: int) -> int:
+    def milestone(token: str, project_id: int, title: str, desc: str, start: int, end: int, after=()) -> int:
         return call("POST", f"/projects/{project_id}/milestones",
-                    {"title": title, "description": desc, "start_date": day(start), "end_date": day(end)}, token)["id"]
+                    {"title": title, "description": desc, "start_date": day(start), "end_date": day(end),
+                     "depends_on": list(after)}, token)["id"]
 
     def assign(token: str, milestone_id: int, employee: dict, start: int, end: int) -> None:
         call("POST", f"/milestones/{milestone_id}/assignments",
@@ -116,16 +122,18 @@ def main() -> None:
                  -60, 300, 450000, 6000, maria["id"])
     m_plan = milestone(maria["token"], dc, "Inventory and plan",
                        "Every server tagged with an owner and a retirement date", -60, -31)
-    m_first = milestone(maria["token"], dc, "First 200 servers", "200 servers wiped, unracked and recycled", -30, 30)
-    milestone(maria["token"], dc, "Next 400 servers", "Servers 201-600 retired", 31, 150)
-    milestone(maria["token"], dc, "Final 400 servers", "Data center floor empty and handed back", 151, 300)
+    # Each step depends on the one before, like the Microsoft Project example in the brief
+    m_first = milestone(maria["token"], dc, "First 200 servers", "200 servers wiped, unracked and recycled",
+                        -30, 30, [m_plan])
+    m_next = milestone(maria["token"], dc, "Next 400 servers", "Servers 201-600 retired", 31, 150, [m_first])
+    milestone(maria["token"], dc, "Final 400 servers", "Data center floor empty and handed back", 151, 300, [m_next])
     assign(maria["token"], m_plan, eve, -60, -31)
     assign(maria["token"], m_first, eve, -30, 30)
     assign(maria["token"], m_first, raj, -30, 30)
     log_weekdays(eve, m_plan, -60, -31)
+    call("POST", f"/milestones/{m_plan}/complete", token=maria["token"])
     log_weekdays(eve, m_first, -30, -1)
     log_weekdays(raj, m_first, -30, -1, hours=7.5)
-    call("POST", f"/milestones/{m_plan}/complete", token=maria["token"])
     call("PUT", f"/projects/{dc}", {"budget": 480000,
                                     "budget_change_reason": "Added 50 servers from the Hughes acquisition"},
          maria["token"])
@@ -135,30 +143,31 @@ def main() -> None:
     pay = project("Payroll system migration", "Move payroll from the on-prem system to the new cloud provider.",
                   -45, 40, 15000, 900, james["id"])
     m_map = milestone(james["token"], pay, "Data mapping", "Every payroll field mapped and validated", -45, -10)
-    m_cut = milestone(james["token"], pay, "Cutover", "First payroll run on the new system", -9, 40)
+    # Cutover can't start until the data is mapped, so the overdue mapping blocks it
+    m_cut = milestone(james["token"], pay, "Cutover", "First payroll run on the new system", -9, 40, after=[m_map])
     assign(james["token"], m_map, tom, -45, -10)
     assign(james["token"], m_map, ana, -30, -10)
     assign(james["token"], m_cut, tom, -9, 40)
     log_weekdays(tom, m_map, -45, -10)
     log_weekdays(ana, m_map, -30, -10)
-    log_weekdays(tom, m_cut, -9, -1)
-    print("  Payroll system migration: over budget, overdue milestone")
+    print("  Payroll system migration: over budget, overdue milestone blocking the cutover")
 
     # 3. Completed: shows green
     net = project("Office network refresh", "Replace switches and Wi-Fi access points in the Austin office.",
                   -120, -20, 40000, 600, maria["id"])
     m_survey = milestone(maria["token"], net, "Site survey", "Coverage map and bill of materials signed off", -120, -90)
-    m_install = milestone(maria["token"], net, "Install and test", "All floors on the new network", -89, -21)
+    m_install = milestone(maria["token"], net, "Install and test", "All floors on the new network", -89, -21,
+                          [m_survey])
     assign(maria["token"], m_survey, lena, -120, -90)
     assign(maria["token"], m_install, lena, -89, -21)
     log_weekdays(lena, m_survey, -120, -90)
-    log_weekdays(lena, m_install, -89, -21)
     call("POST", f"/milestones/{m_survey}/complete", token=maria["token"])
+    log_weekdays(lena, m_install, -89, -21)
     call("POST", f"/milestones/{m_install}/complete", token=maria["token"])
     call("POST", f"/projects/{net}/complete", token=maria["token"])
     print("  Office network refresh: completed")
 
-    print("Done. Sign in as admin, maria (manager) or eve (employee) to see each role's view.")
+    print("Done. Sign in as admin, maria@acme.example (manager) or eve@acme.example (employee) to see each role's view.")
 
 
 if __name__ == "__main__":

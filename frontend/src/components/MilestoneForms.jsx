@@ -3,8 +3,12 @@ import Field from './Field.jsx';
 import Modal from './Modal.jsx';
 import { FormError } from './States.jsx';
 import { useApi, useForm } from '../lib/hooks.js';
-import { formatDate, todayISO } from '../lib/format.js';
-import { dateOrder, first, required } from '../lib/validators.js';
+import {
+  formatDate, parseDate, toISODate, todayISO,
+} from '../lib/format.js';
+import {
+  dateOrder, first, readyAfter, required, startsAfterPredecessors,
+} from '../lib/validators.js';
 import {
   createAssignment, createMilestone, listUsers, updateMilestone,
 } from '../services/tracker.js';
@@ -15,24 +19,39 @@ function withinMessage(value, start, end) {
   return '';
 }
 
+function dayAfter(iso) {
+  const day = parseDate(iso);
+  day.setDate(day.getDate() + 1);
+  return toISODate(day);
+}
+
 /**
  * Add or edit a milestone. Dates must fall inside the project's dates.
  * Status comes from the dates and completed_at, so there's nothing to pick.
+ * The description is the completion criteria ("200 servers retired").
+ * A milestone can depend on others in the project and must start after they end.
  */
 export function MilestoneFormModal({
-  project, milestone, onClose, onSaved,
+  project, milestone, milestones = [], onClose, onSaved,
 }) {
   const editing = Boolean(milestone);
+  const others = milestones.filter((m) => m.id !== milestone?.id);
   const form = useForm(
     {
       title: milestone?.title ?? '',
       description: milestone?.description ?? '',
       start_date: milestone?.start_date ?? project.start_date,
       end_date: milestone?.end_date ?? '',
+      depends_on: (milestone?.depends_on ?? []).map((d) => d.id),
     },
     (v) => ({
       title: required(v.title),
-      start_date: first(required(v.start_date), withinMessage(v.start_date, project.start_date, project.end_date)),
+      description: required(v.description),
+      start_date: first(
+        required(v.start_date),
+        withinMessage(v.start_date, project.start_date, project.end_date),
+        startsAfterPredecessors(v.start_date, others.filter((m) => v.depends_on.includes(m.id))),
+      ),
       end_date: first(
         required(v.end_date),
         dateOrder(v.start_date, v.end_date),
@@ -41,12 +60,29 @@ export function MilestoneFormModal({
     }),
     async (v) => {
       const body = {
-        title: v.title.trim(), description: v.description.trim() || null, start_date: v.start_date, end_date: v.end_date,
+        title: v.title.trim(),
+        description: v.description.trim(),
+        start_date: v.start_date,
+        end_date: v.end_date,
+        depends_on: v.depends_on,
       };
       const saved = editing ? await updateMilestone(milestone.id, body) : await createMilestone(project.id, body);
       onSaved(saved);
     },
   );
+
+  const toggleDependency = (other, checked) => {
+    form.setValue('depends_on', checked
+      ? [...form.values.depends_on, other.id]
+      : form.values.depends_on.filter((id) => id !== other.id));
+    // Picking a predecessor moves the start to the day after it ends, if needed
+    const ready = readyAfter(other);
+    if (checked && form.values.start_date <= ready) {
+      const start = dayAfter(ready);
+      form.setValue('start_date', start);
+      if (form.values.end_date && form.values.end_date < start) form.setValue('end_date', '');
+    }
+  };
 
   return (
     <Modal
@@ -57,12 +93,37 @@ export function MilestoneFormModal({
       <form className="form" onSubmit={form.handleSubmit} noValidate>
         <Field label="Title" required maxLength={150} placeholder="e.g. First 200 servers" {...form.field('title')} />
         <Field
-          label="Description"
+          label="Completion criteria"
           as="textarea"
+          required
           maxLength={2000}
-          hint="What has to be true for this milestone to be complete"
+          placeholder="e.g. Complete the first 200 problems"
+          hint="What has to be done for this milestone to count as complete. Put the full instructions in the project description."
           {...form.field('description')}
         />
+        {others.length > 0 && (
+          <fieldset className="field">
+            <legend>Depends on</legend>
+            <div className="checks">
+              {others.map((other) => (
+                <label key={other.id} className="check">
+                  <input
+                    type="checkbox"
+                    checked={form.values.depends_on.includes(other.id)}
+                    onChange={(event) => toggleDependency(other, event.target.checked)}
+                  />
+                  {other.title}
+                  <span className="faint small">
+                    {other.completed_at ? 'complete' : `ends ${formatDate(other.end_date, { withYear: false })}`}
+                  </span>
+                </label>
+              ))}
+            </div>
+            {form.errors.depends_on
+              ? <span className="field-error">{form.errors.depends_on}</span>
+              : <span className="field-hint">It can't start, log hours or be completed until these are complete.</span>}
+          </fieldset>
+        )}
         <div className="form-row">
           <Field label="Start date" type="date" min={project.start_date} max={project.end_date} required {...form.field('start_date')} />
           <Field label="End date" type="date" min={project.start_date} max={project.end_date} required {...form.field('end_date')} />
@@ -91,7 +152,14 @@ MilestoneFormModal.propTypes = {
     description: PropTypes.string,
     start_date: PropTypes.string.isRequired,
     end_date: PropTypes.string.isRequired,
+    depends_on: PropTypes.arrayOf(PropTypes.shape({ id: PropTypes.number.isRequired })),
   }),
+  milestones: PropTypes.arrayOf(PropTypes.shape({
+    id: PropTypes.number.isRequired,
+    title: PropTypes.string.isRequired,
+    end_date: PropTypes.string.isRequired,
+    completed_at: PropTypes.string,
+  })),
   onClose: PropTypes.func.isRequired,
   onSaved: PropTypes.func.isRequired,
 };

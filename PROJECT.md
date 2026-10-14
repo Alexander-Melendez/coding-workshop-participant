@@ -1,4 +1,6 @@
-# ACME Project Tracker
+# Hexpath PT
+
+*ACME's project tracker (PT = project tracker).* The name comes from the honeycomb: a well-planned team fits together like hexagon cells, with every person's time filled once, no gaps and no overlaps (one milestone at a time, 40 hours a week). The path is the milestones, each one leading to the next through its dependencies. Milestones are drawn as diamonds, as on a Gantt chart, and each project page opens its milestone list with the path itself: the milestones as a dependency graph, completed links solid green and pending ones dashed.
 
 A project, milestone, resource and budget tracker for ACME Inc. Admins set up
 people and projects, managers plan milestones and assign their team, and
@@ -22,7 +24,7 @@ overdue milestones, past the end date, or planned hours above the estimate.
 | How resources are allocated | Overview "Who is working on what", People page |
 | Key deliverables and their completion | Project page, Milestones |
 | Who is over-allocated | Prevented: an employee can't have overlapping assignments; availability shows as Unassigned / hours this week |
-| Dependency chain between deliverables | Milestones are ordered by date inside each project (see Known gaps) |
+| Dependency chain between deliverables | The milestone path at the top of each project (a dependency graph), and "Waiting on …" on each milestone until its predecessors are complete |
 | Budget consumed vs planned | Budget gauge on every sheet, project figures, budget history |
 
 ## Run it locally
@@ -57,11 +59,15 @@ the database still has tables from an older version of the schema, run
 
 ### Sign-in accounts
 
-| Role | Username | Password |
+Sign in with the username **or** the email. Usernames are generated (6
+random characters), so the demo accounts are easiest to use by email; the
+seed script prints each generated username too.
+
+| Role | Sign in with | Password |
 |---|---|---|
 | Admin (always created) | `admin` | `Admin@123` (change it on the Profile page) |
-| Manager (demo data) | `maria`, `james` | `Demo@1234` |
-| Employee (demo data) | `eve`, `raj`, `lena`, `tom`, `ana` | `Demo@1234` |
+| Manager (demo data) | `maria@acme.example`, `james@acme.example` | `Demo@1234` |
+| Employee (demo data) | `eve@acme.example`, `raj@…`, `lena@…`, `tom@…`, `ana@…` | `Demo@1234` |
 
 ## Deploy to AWS
 
@@ -119,10 +125,11 @@ everything itself.
 
 | Table | Purpose |
 |---|---|
-| `users` | Everyone who can sign in: name, username, email, password hash, `role` (ENUM), `archived_at` |
+| `users` | Everyone who can sign in: name, generated username, email, password hash, `role` (ENUM), `archived_at` |
 | `employees` | Extra details for employees: title, salary, manager |
 | `projects` | Title, dates, budget, estimated hours, one manager, `completed_at`, `archived_at` |
-| `milestones` | Deliverables inside a project with their own dates and `completed_at` |
+| `milestones` | Deliverables inside a project with their own dates and `completed_at`. The description is the completion criteria ("200 servers retired"); the project description holds the full instructions |
+| `milestone_dependencies` | "This milestone can't start until that one is complete" (pairs of milestone IDs) |
 | `milestone_assignments` | Who works on which milestone, from when to when |
 | `time_entries` | Hours per employee per day, with the hourly rate at the time |
 | `budget_history` | Every budget change, its reason and who made it |
@@ -140,14 +147,14 @@ set → completed; both `NULL` → in progress. A milestone with no
 services/   api.js (fetch, token refresh, errors), tracker.js (one function per endpoint), auth.jsx
 lib/        router, hooks (useApi, useForm), validators, formatters
 components/ ProjectSheet, BudgetGauge, Field, Modal, forms, tables
-pages/      Login, Dashboard (per role), Projects, ProjectDetail, People, Time, AuditLog, Profile
+pages/      Login, Dashboard (per role), Projects, ProjectDetail, People, MyTeam, Time, AuditLog, Profile
 ```
 
 Each role gets its own navigation and home page:
 
 - **Admin:** organisation totals, every project, who is working on what, recent activity, People and Audit log.
 - **Manager:** their projects, their team's availability and hours this week, milestones due in the next 2 weeks.
-- **Employee:** this week's hours against 40, a quick "log today" form, current and upcoming assignments, their projects (no money shown).
+- **Employee:** this week's hours against 40, a quick "log today" form, current and upcoming assignments, their projects (no money shown), and My team: their manager and teammates (contact details only).
 
 ## Business rules
 
@@ -161,15 +168,18 @@ All of these are checked in `services/` and covered by `tests/test_services.py`.
 | Managers see salaries, rates and per-person costs only for their own team | `Manager.can_view_salary` |
 | Employees see only projects they're assigned to and edit only their own name and email | `Employee` class, `PUT /auth/me` |
 | Only employees have a manager, and it must be a manager | `users_service` |
+| Usernames are generated (6 random characters, retried on a clash) and never change | `users_service.new_username` |
+| Employees see their manager and teammates (contact details only) | `Employee.can_view_user`, `GET /users/my-team` |
 | Milestone dates inside project dates; assignment dates inside milestone dates | `milestones_service` |
 | **One milestone at a time per employee** (no overlapping assignments, across projects) | `milestones_service._check_overlap` |
 | Completed milestones are locked: no edits, deletes, assignments or time | `ensure_milestone_open` |
+| **Dependencies:** a milestone depends only on milestones in the same project, starts after they end, can't have time logged or be completed until they're complete, and loops are rejected | `milestones_service._check_dependencies` |
 | Completing a milestone frees its people from tomorrow | `complete_milestone` |
 | Project completes only when every milestone is complete; only completed projects can be archived | `projects_service` |
 | Time: ≤ 8h a day, one entry a day, ≤ 40h a week, not in the future, only on assigned dates | `time_service` |
 | Cost = hours × (salary ÷ 2,080), rate frozen when logged | `time_entries.hourly_rate` |
 | Budget changes need a reason and are recorded | `budget_history` |
-| Every change and sign-in is recorded; password hashes never are | `audit_log` |
+| Every change, sign-in and sign-out is recorded; password hashes never are. The audit page live-tails (checks every 5 s) and highlights new entries in light blue | `audit_log`, `AuditLogPage` |
 
 **Budget and forecast:** *spent* = logged hours × each entry's rate.
 *Forecast at completion* = spent + remaining assigned weekdays (from tomorrow)
@@ -186,10 +196,12 @@ Everything is under `/api/project-tracker`. Full interactive docs at
 |---|---|---|
 | GET | `/health` | public |
 | POST | `/auth/login`, `/auth/refresh` | public |
+| POST | `/auth/logout` | all (records the sign-out in the audit log) |
 | GET, PUT | `/auth/me` | all (PUT: name and email only) |
 | POST | `/auth/change-password` | all |
 | GET | `/dashboard` | all (content depends on role) |
 | GET, POST | `/users` | admin + manager (GET), admin (POST) |
+| GET | `/users/my-team` | employee |
 | GET, PUT, DELETE | `/users/{id}` | admin, or a manager for their team (DELETE = archive, admin) |
 | POST | `/users/{id}/restore`, `/users/{id}/reset-password` | admin |
 | GET, POST | `/projects` | all (GET), admin (POST) |
@@ -221,10 +233,10 @@ has the same shape (FastAPI's 422 validation errors are turned into 400):
 
 | Suite | Command | What it covers |
 |---|---|---|
-| Backend rules | `cd backend/project-tracker && pytest` | 51 tests in `test_services.py`: every rule above against a real PostgreSQL, in a separate `tracker_test` database |
+| Backend rules | `cd backend/project-tracker && pytest` | 70 tests in `test_services.py`: every rule above against a real PostgreSQL, in a separate `tracker_test` database |
 | Backend HTTP | (same command) | 11 tests in `test_api.py`: routing, auth dependencies, 400/401/403/404/409 shapes, URL prefix handling, and a real Lambda event through Mangum |
-| Frontend unit | `cd frontend && npm test` | 15 tests: formatters, router, validators, API client including token refresh |
-| End to end | `cd frontend && npx playwright install chromium && npm run test:e2e` | A real browser through all three roles: admin creates people and a project, manager plans and assigns, employee logs time, manager sees the cost |
+| Frontend unit | `cd frontend && npm test` | 20 tests: formatters, router, validators, milestone graph layout, API client including token refresh |
+| End to end | `cd frontend && npx playwright install chromium && npm run test:e2e` | A real browser through all three roles: admin creates people and a project, manager plans and assigns, employee logs time and sees their team, manager sees the cost |
 
 Coverage: `pytest --cov=. --cov-report=term-missing`.
 
@@ -245,11 +257,13 @@ Coverage: `pytest --cov=. --cov-report=term-missing`.
 - **Rules in Python, not database constraints.** This keeps `schema.sql` simple to read. The trade-off is that two simultaneous requests could slip past a check like the overlap check; a database `EXCLUDE` constraint would close that gap.
 - **`schema.sql` runs once, on an empty database.** Simple, but later schema changes need a manual `ALTER TABLE` or a reset; a real system would use migrations (for example Alembic).
 - **PBKDF2 for passwords** (standard library, nothing compiled to break when packaging for Lambda), at 100,000 iterations because a 128 MB Lambda has little CPU. The count is stored with each hash, so it can be raised later.
+- **Complete, then archive (two steps).** Completing means the work is finished and the numbers are final; archiving hides the project from day-to-day lists. Keeping them apart lets a finished project stay visible (green) for review, and lets the record show whether a project was finished or abandoned.
+- **Hours are logged and also calculated.** Logged hours drive actual cost (what really happened); assignments × weekdays × 8h drive the forecast (what will happen if the plan holds).
+- **Generated usernames.** 31^6 ≈ 887 million combinations: with 50,000 users a new name clashes about 1 time in 18,000, and the server simply picks again (up to 20 times). The UNIQUE constraint on `users.username` catches two simultaneous creates.
 - **Tokens in localStorage**, with 30-minute access tokens and 12-hour refresh tokens. httpOnly cookies would be stronger.
 
 ## Known gaps
 
-- Milestone dependencies are implicit (date order), not explicit "B depends on A" links.
 - No email: temporary passwords are shown once to the admin.
 - No pagination on the users and projects lists (the audit log is paged).
 - No overtime, holidays, part-time schedules or time-entry approvals.

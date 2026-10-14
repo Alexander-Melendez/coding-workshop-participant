@@ -3,6 +3,7 @@ import PropTypes from 'prop-types';
 import { Link, useRouter } from '../lib/router.jsx';
 import { useAuth } from '../services/auth.jsx';
 import { roleLabel } from '../lib/format.js';
+import Logo from './Logo.jsx';
 
 /** Navigation per role: each role sees only the pages it can use. */
 export const NAV = {
@@ -23,6 +24,7 @@ export const NAV = {
     { to: '/', label: 'My week' },
     { to: '/time', label: 'Log time' },
     { to: '/projects', label: 'My projects' },
+    { to: '/team', label: 'My team' },
   ],
 };
 
@@ -32,7 +34,7 @@ function isActive(to, pathname) {
 
 /** Sidebar on desktop, slide-out drawer on phones. */
 export default function Layout({ children }) {
-  const { user, logout } = useAuth();
+  const { user, signOut } = useAuth();
   const { pathname } = useRouter();
   const [open, setOpen] = useState(false);
 
@@ -50,14 +52,15 @@ export default function Layout({ children }) {
         >
           ☰
         </button>
-        <strong>ACME Projects</strong>
+        <span className="brand brand--bar"><Logo size={18} /><strong>Hexpath <span className="brand-pt">PT</span></strong></span>
       </header>
       {open && <div className="scrim" onClick={() => setOpen(false)} aria-hidden="true" />}
 
       <aside className="sidebar" data-open={open} aria-label="Main navigation">
         <div className="brand">
-          <strong>ACME</strong>
-          <span>Project Tracker</span>
+          <Logo />
+          <strong>Hexpath <span className="brand-pt">PT</span></strong>
+          <span>by ACME</span>
         </div>
         <nav className="nav">
           {(NAV[user.role] || []).map((item) => (
@@ -73,7 +76,7 @@ export default function Layout({ children }) {
         <div className="sidebar-foot">
           <Link to="/profile" className="whoami">{user.name}</Link>
           <span className="whoami-role">{`${roleLabel(user.role)}, ${user.display_id}`}</span>
-          <button type="button" className="link-button" onClick={() => logout()}>Sign out</button>
+          <button type="button" className="link-button" onClick={() => signOut()}>Sign out</button>
         </div>
       </aside>
 
@@ -87,7 +90,7 @@ Layout.propTypes = { children: PropTypes.node.isRequired };
 /** Standard page heading with optional description and actions. */
 export function PageHead({ title, description, actions }) {
   useEffect(() => {
-    document.title = `${title} | ACME Project Tracker`;
+    document.title = `${title} | Hexpath PT`;
   }, [title]);
   return (
     <div className="page-head">

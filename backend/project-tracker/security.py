@@ -43,6 +43,15 @@ def verify_password(password: str, stored: str | None) -> bool:
         return False
 
 
+# No look-alike characters (0/O, 1/l/I), so usernames are easy to read out and type
+USERNAME_CHARACTERS = "abcdefghjkmnpqrstuvwxyz23456789"
+
+
+def generate_username(length: int = 6) -> str:
+    """Random sign-in name like 'k7m2qx'. 31^6 is about 887 million combinations."""
+    return "".join(secrets.choice(USERNAME_CHARACTERS) for _ in range(length))
+
+
 def generate_password(length: int = 6) -> str:
     """Random temporary password with letters and at least one digit (no look-alikes like 0/O)."""
     letters = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ"

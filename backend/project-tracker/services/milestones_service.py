@@ -7,6 +7,11 @@ Rules:
 - managers assign only their own employees; admins can assign anyone
 - a completed milestone (completed_at set) is locked
 - completing a milestone frees its people from tomorrow
+- dependencies (like Microsoft Project): a milestone can depend on other
+  milestones in the same project. It must start after they end (or after
+  the day they were completed), nobody can log time on it and it can't be
+  completed until they're all complete, and loops (A needs B, B needs A)
+  are rejected
 """
 
 from datetime import date
@@ -32,6 +37,7 @@ from services.common import (
 def serialize_milestone(db: Database, milestone: dict, viewer: User) -> dict:
     repo = MilestoneRepository(db)
     totals = repo.hours_and_cost(milestone["id"])
+    predecessors = repo.predecessors(milestone["id"])
     status = milestone_status(milestone)
     data = {
         "id": milestone["id"],
@@ -45,6 +51,9 @@ def serialize_milestone(db: Database, milestone: dict, viewer: User) -> dict:
         "locked": status == "complete",
         "overdue": status != "complete" and milestone["end_date"] < date.today(),
         "hours_logged": number(totals["hours"]),
+        "depends_on": [{"id": p["id"], "title": p["title"], "complete": p["completed_at"] is not None}
+                       for p in predecessors],
+        "waiting_on": [p["title"] for p in predecessors if p["completed_at"] is None],
         "assignments": [serialize_assignment(a) for a in repo.assignments_for(milestone["id"])],
     }
     if viewer.can_see_costs:
@@ -77,6 +86,68 @@ def _inside(field_start: str, field_end: str, start, end, outer_start, outer_end
         raise BadRequest(f"Dates must fall inside the {what} dates", fields)
 
 
+# --- dependencies -----------------------------------------------------------
+def _ready_after(predecessor: dict) -> date:
+    """The last day a predecessor blocks: the day it was completed, or its planned end."""
+    return predecessor["completed_at"].date() if predecessor["completed_at"] else predecessor["end_date"]
+
+
+def _check_dependencies(repo: MilestoneRepository, project_id: int, milestone_id: int | None,
+                        depends_on: list[int], start_date: date) -> list[int]:
+    """Validate a milestone's predecessors and return their IDs without duplicates."""
+    ids = list(dict.fromkeys(depends_on))
+    if milestone_id in ids:
+        raise BadRequest("A milestone can't depend on itself", {"depends_on": "Can't include this milestone"})
+
+    predecessors = []
+    for predecessor_id in ids:
+        predecessor = repo.find_by_id(predecessor_id)
+        if predecessor is None or predecessor["project_id"] != project_id:
+            raise BadRequest("Dependencies must be milestones in the same project",
+                             {"depends_on": f"Milestone {predecessor_id} isn't in this project"})
+        predecessors.append(predecessor)
+
+    # Loop check: walk back from each new predecessor; reaching this milestone means a loop
+    if milestone_id is not None:
+        needs = {}
+        for link in repo.project_dependencies(project_id):
+            if link["milestone_id"] != milestone_id:
+                needs.setdefault(link["milestone_id"], []).append(link["depends_on_id"])
+        for predecessor in predecessors:
+            seen, todo = set(), [predecessor["id"]]
+            while todo:
+                current = todo.pop()
+                if current == milestone_id:
+                    raise BadRequest(f"'{predecessor['title']}' already depends on this milestone, "
+                                     "so this would create a loop", {"depends_on": "Would create a loop"})
+                if current not in seen:
+                    seen.add(current)
+                    todo.extend(needs.get(current, []))
+
+    for predecessor in predecessors:
+        if start_date <= _ready_after(predecessor):
+            raise BadRequest(f"This milestone depends on '{predecessor['title']}', so it must start after "
+                             f"{_ready_after(predecessor)}",
+                             {"start_date": f"Must be after {_ready_after(predecessor)}"})
+    return ids
+
+
+def _check_dependents(repo: MilestoneRepository, milestone_id: int, end_date: date) -> None:
+    """Milestones waiting on this one must still start after it ends."""
+    for dependent in repo.dependents(milestone_id):
+        if dependent["start_date"] <= end_date:
+            raise BadRequest(f"'{dependent['title']}' depends on this milestone and starts on "
+                             f"{dependent['start_date']}. Move it later first.",
+                             {"end_date": f"Must be before {dependent['start_date']}"})
+
+
+def ensure_predecessors_complete(repo: MilestoneRepository, milestone_id: int, doing: str) -> None:
+    waiting = [p["title"] for p in repo.predecessors(milestone_id) if p["completed_at"] is None]
+    if waiting:
+        names = ", ".join(f"'{title}'" for title in waiting)
+        raise Conflict(f"{names} must be completed before you can {doing}")
+
+
 # --- milestones -------------------------------------------------------------
 def list_milestones(db: Database, viewer: User, project_id: int) -> list[dict]:
     project_for(db, viewer, project_id)
@@ -90,10 +161,13 @@ def create_milestone(db: Database, actor: User, project_id: int, body: Milestone
     _inside("start_date", "end_date", body.start_date, body.end_date,
             project["start_date"], project["end_date"], "project")
     repo = MilestoneRepository(db)
+    depends_on = _check_dependencies(repo, project_id, None, body.depends_on, body.start_date)
     milestone_id = repo.create(project_id, body.title, body.description, body.start_date, body.end_date)
+    repo.set_dependencies(milestone_id, depends_on)
     milestone = repo.find_by_id(milestone_id)
     AuditRepository(db).add(actor, "create", "milestone", milestone_id,
-                            f"Added milestone '{body.title}' to {project['title']}", after=milestone)
+                            f"Added milestone '{body.title}' to {project['title']}",
+                            after={**milestone, "depends_on": depends_on})
     return serialize_milestone(db, milestone, actor)
 
 
@@ -108,14 +182,19 @@ def update_milestone(db: Database, actor: User, milestone_id: int, body: Milesto
     ensure_project_open(project)
     ensure_milestone_open(milestone)
     sent = body.model_dump(include=body.model_fields_set)
-    if "title" in sent and not sent["title"]:
-        raise BadRequest("The title can't be empty", {"title": "This field is required"})
-    new = {**milestone, **{k: v for k, v in sent.items() if v is not None or k == "description"}}
+    for field in ("title", "description"):
+        if field in sent and not sent[field]:
+            raise BadRequest(f"The {field} can't be empty", {field: "This field is required"})
+    new = {**milestone, **{k: v for k, v in sent.items() if v is not None and k != "depends_on"}}
     check_date_order(new["start_date"], new["end_date"])
     _inside("start_date", "end_date", new["start_date"], new["end_date"],
             project["start_date"], project["end_date"], "project")
 
     repo = MilestoneRepository(db)
+    old_depends_on = [p["id"] for p in repo.predecessors(milestone_id)]
+    wanted = sent["depends_on"] if sent.get("depends_on") is not None else old_depends_on
+    depends_on = _check_dependencies(repo, project["id"], milestone_id, wanted, new["start_date"])
+    _check_dependents(repo, milestone_id, new["end_date"])
     clash = repo.assignment_outside(milestone_id, new["start_date"], new["end_date"])
     if clash:
         raise BadRequest(f"{clash['employee_name']}'s assignment falls outside these dates. Change it first.",
@@ -125,9 +204,10 @@ def update_milestone(db: Database, actor: User, milestone_id: int, body: Milesto
                          {"start_date": "Must include all logged hours", "end_date": "Must include all logged hours"})
 
     repo.update(milestone_id, new["title"], new["description"], new["start_date"], new["end_date"])
+    repo.set_dependencies(milestone_id, depends_on)
     after = repo.find_by_id(milestone_id)
     AuditRepository(db).add(actor, "update", "milestone", milestone_id, f"Updated milestone '{after['title']}'",
-                            milestone, after)
+                            {**milestone, "depends_on": old_depends_on}, {**after, "depends_on": depends_on})
     return serialize_milestone(db, after, actor)
 
 
@@ -136,6 +216,7 @@ def complete_milestone(db: Database, actor: User, milestone_id: int) -> dict:
     ensure_project_open(project)
     ensure_milestone_open(milestone)
     repo = MilestoneRepository(db)
+    ensure_predecessors_complete(repo, milestone_id, "complete this milestone")
     repo.mark_completed(milestone_id)
     repo.end_assignments_today(milestone_id=milestone_id)
     AuditRepository(db).add(actor, "complete", "milestone", milestone_id, f"Completed milestone '{milestone['title']}'")
@@ -150,6 +231,9 @@ def delete_milestone(db: Database, actor: User, milestone_id: int) -> None:
     repo = MilestoneRepository(db)
     if repo.has_time(milestone_id):
         raise Conflict("Hours have been logged on this milestone, so it can't be deleted")
+    dependents = repo.dependents(milestone_id)
+    if dependents:
+        raise Conflict(f"'{dependents[0]['title']}' depends on this milestone. Remove that dependency first.")
     repo.delete(milestone_id)
     AuditRepository(db).add(actor, "delete", "milestone", milestone_id,
                             f"Deleted milestone '{milestone['title']}' from {project['title']}", before=milestone)

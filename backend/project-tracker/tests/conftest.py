@@ -30,7 +30,7 @@ from models.schemas import MilestoneCreate, ProjectCreate, UserCreate  # noqa: E
 from repositories.user_repository import UserRepository  # noqa: E402
 from services import milestones_service, projects_service, users_service  # noqa: E402
 
-TABLES = "audit_log, budget_history, time_entries, milestone_assignments, milestones, projects, employees, users"
+TABLES = "audit_log, budget_history, time_entries, milestone_assignments, milestone_dependencies, milestones, projects, employees, users"
 
 
 def days(n: int) -> date:
@@ -93,8 +93,8 @@ def who(user_id: int):
 
 
 def new_user(admin, role: str, name: str, **extra) -> int:
-    username = name.lower().replace(" ", ".")
-    body = UserCreate(name=name, username=username, email=f"{username}@acme.example", role=role,
+    handle = name.lower().replace(" ", ".")
+    body = UserCreate(name=name, email=f"{handle}@acme.example", role=role,
                       **({"title": "Engineer", "salary": 104000} if role == "employee" else {}), **extra)
     return call(users_service.create_user, admin, body)["user"]["id"]
 

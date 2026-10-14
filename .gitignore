@@ -257,5 +257,9 @@ tfplan
 # Snyk Security Extension - AI Rules (auto-generated)
 .github/instructions/snyk_rules.instructions.md
 
+# Project tracker
+e2e-failure.png
+backend/*/.pip_installed
+
 # The Python "lib/" rule above would also hide the React helpers folder
 !frontend/src/lib/

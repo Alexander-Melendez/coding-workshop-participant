@@ -62,14 +62,27 @@ def serialize_many(db: Database, rows: list[dict], viewer: User) -> list[dict]:
     return [serialize_user(r, viewer, with_workload=True, db=db, workload=load) for r in rows]
 
 
-def ensure_unique(users: UserRepository, username: str | None, email: str | None, except_id: int = 0) -> None:
-    fields = {}
-    if username and users.username_taken(username, except_id):
-        fields["username"] = "This username is already taken"
+def ensure_unique_email(users: UserRepository, email: str | None, except_id: int = 0) -> None:
     if email and users.email_taken(email, except_id):
-        fields["email"] = "This email is already in use"
-    if fields:
-        raise Conflict("Username or email already in use", fields)
+        raise Conflict("This email is already in use", {"email": "This email is already in use"})
+
+
+USERNAME_ATTEMPTS = 20
+
+
+def new_username(users: UserRepository) -> str:
+    """A random 6-character username nobody has yet.
+
+    With 887 million combinations, even at 50,000 users a new name collides
+    about 1 time in 18,000, so a retry almost never happens and 20 in a row
+    is practically impossible. The UNIQUE constraint on users.username is the
+    final guard if two admins create someone at the same instant.
+    """
+    for _ in range(USERNAME_ATTEMPTS):
+        username = security.generate_username()
+        if not users.username_taken(username):
+            return username
+    raise Conflict("Couldn't pick a free username. Please try again.")
 
 
 def _check_manager(users: UserRepository, manager_id: int | None) -> None:
@@ -101,20 +114,52 @@ def list_users(db: Database, viewer: User, search: str | None, role: str | None,
 
 
 def create_user(db: Database, actor: User, body: UserCreate) -> dict:
-    """Admin creates a user and gets a random 6-character password to hand over once."""
+    """Admin creates a user. The server picks a random 6-character username and
+    password; the admin hands them over once and the user changes the password."""
     users = UserRepository(db)
     if body.role != "employee" and body.manager_id:
         raise BadRequest("Only employees report to a manager", {"manager_id": "Only for employees"})
     _check_manager(users, body.manager_id)
-    ensure_unique(users, body.username, body.email)
+    ensure_unique_email(users, body.email)
 
+    username = new_username(users)
     password = security.generate_password(6)
-    user_id = users.create(body.email, body.username, body.name, security.hash_password(password), body.role)
+    user_id = users.create(body.email, username, body.name, security.hash_password(password), body.role)
     if body.role == "employee":
         users.create_employee(user_id, body.title, body.salary, body.manager_id)
     row = users.find_by_id(user_id)
     AuditRepository(db).add(actor, "create", "user", user_id, f"Created {body.role} {body.name}", after=row)
     return {"user": serialize_user(row, actor), "temporary_password": password}
+
+
+def _contact(row: dict, viewer: User) -> dict:
+    """What an employee sees about a teammate or their manager: who they are and how to reach them."""
+    return {
+        "id": row["id"],
+        "display_id": display_id(row["role"], row["id"]),
+        "role": row["role"],
+        "name": row["name"],
+        "email": row["email"],
+        "title": row["title"],
+        "is_me": row["id"] == viewer.id,
+    }
+
+
+def my_team(db: Database, viewer: User) -> dict:
+    """An employee's manager and immediate team (everyone with the same manager).
+
+    Contact details only: no salaries, usernames or what teammates are working on,
+    since employees only see their own projects.
+    """
+    users = UserRepository(db)
+    if viewer.manager_id is None:
+        return {"manager": None, "teammates": []}
+    manager = users.find_by_id(viewer.manager_id)
+    rows = users.search(archived=False, role="employee", manager_id=viewer.manager_id)
+    return {
+        "manager": _contact(manager, viewer) if manager and viewer.can_view_user(manager) else None,
+        "teammates": [_contact(r, viewer) for r in rows if viewer.can_view_user(r)],
+    }
 
 
 def get_user(db: Database, viewer: User, user_id: int) -> dict:
@@ -141,7 +186,7 @@ def update_user(db: Database, actor: User, user_id: int, body: UserUpdate) -> di
         raise Forbidden(f"You are not allowed to change: {', '.join(sorted(not_allowed))}")
 
     new = {**before, **body.model_dump(include=sent)}
-    blank = [f for f in ("name", "email", "username", "role", "salary") if f in sent and new[f] is None]
+    blank = [f for f in ("name", "email", "role", "salary") if f in sent and new[f] is None]
     if blank:
         raise BadRequest("These fields can't be empty", {f: "This field is required" for f in blank})
     if new["role"] != before["role"]:
@@ -152,9 +197,9 @@ def update_user(db: Database, actor: User, user_id: int, body: UserUpdate) -> di
         raise BadRequest("Nobody can be their own manager", {"manager_id": "Choose someone else"})
     if "manager_id" in sent:
         _check_manager(users, new["manager_id"])
-    ensure_unique(users, body.username, body.email, user_id)
+    ensure_unique_email(users, body.email, user_id)
 
-    users.update_user(user_id, new["name"], new["email"], new["username"], new["role"])
+    users.update_user(user_id, new["name"], new["email"], new["role"])
     if new["role"] == "employee":
         if before["employee_id"]:
             users.update_employee(user_id, new["title"], new["salary"], new["manager_id"])

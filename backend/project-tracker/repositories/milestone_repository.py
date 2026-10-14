@@ -49,6 +49,7 @@ class MilestoneRepository:
         self.db.run("UPDATE milestones SET completed_at = now() WHERE id = %s", (milestone_id,))
 
     def delete(self, milestone_id: int) -> None:
+        self.db.run("DELETE FROM milestone_dependencies WHERE milestone_id = %s", (milestone_id,))
         self.db.run("DELETE FROM milestone_assignments WHERE milestone_id = %s", (milestone_id,))
         self.db.run("DELETE FROM milestones WHERE id = %s", (milestone_id,))
 
@@ -61,6 +62,37 @@ class MilestoneRepository:
             "SELECT id FROM time_entries WHERE milestone_id = %s AND (work_date < %s OR work_date > %s) LIMIT 1",
             (milestone_id, start, end),
         ) is not None
+
+    # --- dependencies -------------------------------------------------------
+    def predecessors(self, milestone_id: int) -> list[dict]:
+        """Milestones that must be complete before this one can start."""
+        return self.db.all(
+            "SELECT m.* FROM milestone_dependencies d JOIN milestones m ON m.id = d.depends_on_id "
+            "WHERE d.milestone_id = %s ORDER BY m.start_date, m.id",
+            (milestone_id,),
+        )
+
+    def dependents(self, milestone_id: int) -> list[dict]:
+        """Milestones that are waiting on this one."""
+        return self.db.all(
+            "SELECT m.* FROM milestone_dependencies d JOIN milestones m ON m.id = d.milestone_id "
+            "WHERE d.depends_on_id = %s ORDER BY m.start_date, m.id",
+            (milestone_id,),
+        )
+
+    def project_dependencies(self, project_id: int) -> list[dict]:
+        """Every (milestone_id, depends_on_id) link in a project."""
+        return self.db.all(
+            "SELECT d.milestone_id, d.depends_on_id FROM milestone_dependencies d "
+            "JOIN milestones m ON m.id = d.milestone_id WHERE m.project_id = %s",
+            (project_id,),
+        )
+
+    def set_dependencies(self, milestone_id: int, depends_on_ids: list[int]) -> None:
+        self.db.run("DELETE FROM milestone_dependencies WHERE milestone_id = %s", (milestone_id,))
+        for depends_on_id in depends_on_ids:
+            self.db.run("INSERT INTO milestone_dependencies (milestone_id, depends_on_id) VALUES (%s, %s)",
+                        (milestone_id, depends_on_id))
 
     # --- assignments --------------------------------------------------------
     def assignment(self, assignment_id: int) -> dict | None:

@@ -74,18 +74,25 @@ def test_bad_query_parameter_is_400(client):
 def test_role_checks(client):
     admin = login(client)
     created = client.post(f"{API}/users", headers=admin, json={
-        "name": "Eve", "username": "eve", "email": "eve@acme.example", "role": "employee"})
+        "name": "Eve", "email": "eve@acme.example", "role": "employee"})
     assert created.status_code == 201
-    eve = login(client, "eve", created.json()["temporary_password"])
+    eve = login(client, created.json()["user"]["username"], created.json()["temporary_password"])
     assert client.get(f"{API}/users", headers=eve).status_code == 403
     assert client.get(f"{API}/audit-logs", headers=eve).status_code == 403
     assert client.get(f"{API}/audit-logs", headers=admin).status_code == 200
+    # employees see their own team; the route is only for employees
+    team = client.get(f"{API}/users/my-team", headers=eve)
+    assert team.status_code == 200 and team.json() == {"manager": None, "teammates": []}
+    assert client.get(f"{API}/users/my-team", headers=admin).status_code == 403
+    # signing out is recorded; without a token it's a 401
+    assert client.post(f"{API}/auth/logout", headers=eve).status_code == 204
+    assert client.post(f"{API}/auth/logout").status_code == 401
 
 
 def test_project_crud_flow(client):
     admin = login(client)
     manager = client.post(f"{API}/users", headers=admin, json={
-        "name": "Maria", "username": "maria", "email": "maria@acme.example", "role": "manager"}).json()["user"]
+        "name": "Maria", "email": "maria@acme.example", "role": "manager"}).json()["user"]
     project = client.post(f"{API}/projects", headers=admin, json={
         "title": "Decommission", "start_date": str(days(-10)), "end_date": str(days(100)),
         "budget": 1000, "manager_id": manager["id"]})

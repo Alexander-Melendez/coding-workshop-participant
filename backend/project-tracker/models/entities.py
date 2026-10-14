@@ -102,6 +102,15 @@ class Employee(User):
     def can_view_project(self, project, assigned=False):
         return assigned and project["archived_at"] is None
 
+    def can_view_user(self, target):
+        """Themselves, their manager, and teammates (others with the same manager)."""
+        if super().can_view_user(target):
+            return True
+        if target["archived_at"] or self.manager_id is None:
+            return False
+        return target["id"] == self.manager_id or (
+            target["role"] == "employee" and target.get("manager_id") == self.manager_id)
+
 
 class Manager(User):
     """Runs the projects where they are the manager; manages their own team."""
@@ -162,7 +171,7 @@ class Admin(User):
         return True
 
     def editable_fields(self, target):
-        fields = {"name", "email", "username", "role", "title", "salary", "manager_id"}
+        fields = {"name", "email", "role", "title", "salary", "manager_id"}  # usernames never change
         if target["id"] == self.id:
             fields.discard("role")  # can't demote yourself and lock everyone out
         return fields

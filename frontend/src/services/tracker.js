@@ -5,6 +5,7 @@ import { api, request } from './api.js';
 
 // auth
 export const login = (username, password) => request('POST', '/auth/login', { body: { username, password }, auth: false });
+export const logout = () => api.post('/auth/logout');
 export const getMe = () => api.get('/auth/me');
 export const updateMe = (body) => api.put('/auth/me', body);
 export const changePassword = (body) => api.post('/auth/change-password', body);
@@ -19,6 +20,7 @@ export const updateUser = (id, body) => api.put(`/users/${id}`, body);
 export const archiveUser = (id) => api.del(`/users/${id}`);
 export const restoreUser = (id) => api.post(`/users/${id}/restore`);
 export const resetPassword = (id) => api.post(`/users/${id}/reset-password`);
+export const getMyTeam = () => api.get('/users/my-team');
 
 // projects
 export const listProjects = (query) => api.get('/projects', query);

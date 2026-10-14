@@ -47,6 +47,16 @@ export function AuthProvider({ children }) {
     return data.user;
   }, []);
 
+  /** The Sign out button: record it in the audit log, then forget the tokens either way. */
+  const signOut = useCallback(async () => {
+    try {
+      await tracker.logout();
+    } catch {
+      // An expired session or a network error shouldn't stop someone signing out
+    }
+    logout();
+  }, [logout]);
+
   const refreshUser = useCallback(async () => {
     const me = await tracker.getMe();
     setUser(me);
@@ -54,15 +64,15 @@ export function AuthProvider({ children }) {
   }, []);
 
   const value = useMemo(() => ({
-    user, status, notice, login, logout, refreshUser,
-  }), [user, status, notice, login, logout, refreshUser]);
+    user, status, notice, login, logout, signOut, refreshUser,
+  }), [user, status, notice, login, logout, signOut, refreshUser]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
 AuthProvider.propTypes = { children: PropTypes.node.isRequired };
 
-/** { user, status, notice, login, logout, refreshUser } */
+/** { user, status, notice, login, logout, signOut, refreshUser } */
 export function useAuth() {
   const ctx = useContext(AuthContext);
   if (!ctx) throw new Error('useAuth must be used inside AuthProvider');

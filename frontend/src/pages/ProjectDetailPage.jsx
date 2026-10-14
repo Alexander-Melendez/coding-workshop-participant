@@ -5,6 +5,8 @@ import BudgetGauge, { ProgressBar } from '../components/BudgetGauge.jsx';
 import { HealthPill, MilestonePill } from '../components/Pills.jsx';
 import ProjectFormModal, { ManagerSelect } from '../components/ProjectForm.jsx';
 import { AssignModal, MilestoneFormModal } from '../components/MilestoneForms.jsx';
+import MilestoneGraph from '../components/MilestoneGraph.jsx';
+import { milestoneState } from '../lib/graph.js';
 import Modal, { ConfirmDialog } from '../components/Modal.jsx';
 import { EmptyState, ErrorState, Loading } from '../components/States.jsx';
 import { useToast } from '../components/Toasts.jsx';
@@ -147,6 +149,7 @@ export default function ProjectDetailPage({ params }) {
               : 'The project manager has not added milestones yet.'}
           </EmptyState>
         )}
+        {milestones.data && milestones.data.length > 1 && <MilestoneGraph milestones={milestones.data} />}
         {milestones.data && milestones.data.length > 0 && (
           <div className="milestones">
             {milestones.data.map((m) => (
@@ -199,6 +202,7 @@ export default function ProjectDetailPage({ params }) {
         <MilestoneFormModal
           project={p}
           milestone={modal.milestone}
+          milestones={milestones.data || []}
           onClose={closeModal}
           onSaved={saved(modal.milestone ? 'Milestone saved' : 'Milestone added')}
         />
@@ -304,16 +308,23 @@ function MilestoneRow({
   milestone: m, canManage, showCost, onEdit, onAssign, onComplete, onDelete, onUnassign,
 }) {
   const open = canManage && !m.locked;
-  const markState = m.overdue ? 'overdue' : m.status;
+  const markState = milestoneState(m);
   return (
-    <article className="milestone" data-testid="milestone">
+    <article className="milestone" data-testid="milestone" id={`milestone-${m.id}`} tabIndex={-1}>
       <span className={`milestone-mark milestone-mark--${markState}`} aria-hidden="true" />
       <div className="milestone-body">
         <div className="actions">
           <h3>{m.title}</h3>
-          <MilestonePill status={m.status} overdue={m.overdue} />
+          <MilestonePill status={m.status} overdue={m.overdue} waiting={m.waiting_on?.length > 0} />
         </div>
-        {m.description && <p className="muted small">{m.description}</p>}
+        {m.description && <p className="muted small">{`Done when: ${m.description}`}</p>}
+        {m.depends_on?.length > 0 && (
+          <p className="small">
+            {m.waiting_on.length > 0
+              ? <span className="muted">{`Can't start until ${m.waiting_on.join(' and ')} ${m.waiting_on.length === 1 ? 'is' : 'are'} complete`}</span>
+              : <span className="faint">{`After ${m.depends_on.map((d) => d.title).join(', ')}`}</span>}
+          </p>
+        )}
         <p className="small num">
           {formatRange(m.start_date, m.end_date)}
           {`, ${formatHours(m.hours_logged)} logged`}

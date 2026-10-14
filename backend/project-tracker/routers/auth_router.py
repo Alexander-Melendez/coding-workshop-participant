@@ -1,6 +1,6 @@
 """Sign in, refresh, and the signed-in user's own profile."""
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 
 from auth import get_current_user
 from db import transaction
@@ -23,6 +23,14 @@ def refresh(body: RefreshRequest):
     """A refresh token -> new tokens, so users stay signed in."""
     with transaction() as db:
         return auth_service.refresh(db, body.refresh_token)
+
+
+@router.post("/logout", status_code=204)
+def logout(user: User = Depends(get_current_user)):
+    """Record the sign-out in the audit log. The browser then forgets its tokens."""
+    with transaction() as db:
+        auth_service.logout(db, user)
+    return Response(status_code=204)
 
 
 @router.get("/me")

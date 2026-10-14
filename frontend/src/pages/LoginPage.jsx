@@ -4,6 +4,7 @@ import { FormError } from '../components/States.jsx';
 import { useForm } from '../lib/hooks.js';
 import { required } from '../lib/validators.js';
 import { useAuth } from '../services/auth.jsx';
+import Logo from '../components/Logo.jsx';
 
 /** Sign-in screen. */
 export default function LoginPage() {
@@ -15,12 +16,17 @@ export default function LoginPage() {
   );
 
   useEffect(() => {
-    document.title = 'Sign in | ACME Project Tracker';
+    document.title = 'Sign in | Hexpath PT';
   }, []);
 
   return (
     <div className="login">
       <section className="login-art" aria-hidden="true">
+        <div className="brand brand--login">
+          <Logo size={28} />
+          <strong>Hexpath <span className="brand-pt">PT</span></strong>
+          <span>ACME&apos;s project tracker</span>
+        </div>
         <div>
           <h1>Every project, on one sheet.</h1>
           <p>
@@ -28,16 +34,11 @@ export default function LoginPage() {
             then drill into milestones, people and hours.
           </p>
         </div>
-        <div className="login-sheets">
-          <div style={{ background: '#fff', color: '#1d2433', borderColor: '#1d2433' }}>In progress</div>
-          <div style={{ background: '#fbe9e7', color: '#c4342d', borderColor: '#c4342d' }}>Over budget</div>
-          <div style={{ background: '#e6f2ea', color: '#2f7d4f', borderColor: '#2f7d4f' }}>Completed</div>
-        </div>
       </section>
 
       <section className="login-form">
         <div>
-          <h2>Sign in to ACME Project Tracker</h2>
+          <h2>Sign in to Hexpath PT</h2>
           <p className="muted small">Use the username or email and password your admin gave you.</p>
         </div>
         {notice && <div className="banner banner--info">{notice}</div>}

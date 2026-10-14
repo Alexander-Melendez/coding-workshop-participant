@@ -51,14 +51,13 @@ async function signOut(page) {
 }
 
 async function addPerson(page, {
-  name, username, role, salary, managerName,
+  name, handle, role, salary, managerName,
 }) {
   await page.goto(`${BASE}/people`);
   await page.getByRole('button', { name: 'Add person' }).click();
   const dialog = page.getByRole('dialog');
   await dialog.getByLabel('Full name').fill(name);
-  await dialog.getByLabel('Email').fill(`${username}@e2e.example`);
-  await dialog.getByLabel('Username').fill(username);
+  await dialog.getByLabel('Email').fill(`${handle}@e2e.example`);
   await dialog.getByLabel('Role').selectOption(role);
   if (role === 'employee') await dialog.getByLabel('Annual salary (USD)').fill(String(salary));
   if (managerName) {
@@ -67,15 +66,17 @@ async function addPerson(page, {
   }
   await dialog.getByRole('button', { name: 'Add person' }).click();
   const password = await page.getByTestId('temporary-password').textContent();
+  const username = await page.getByTestId('new-username').textContent();
   assert.equal(password.length, 6, 'temporary password should be 6 characters');
+  assert.match(username, /^[a-z2-9]{6}$/, 'username should be 6 generated characters');
   await page.getByRole('button', { name: 'Done' }).click();
-  return password;
+  return { password, username };
 }
 
 const browser = await chromium.launch();
 const page = await (await browser.newContext({ viewport: { width: 1366, height: 900 } })).newPage();
-const manager = { name: `Mia Manager ${RUN}`, username: `mia.${RUN}` };
-const employee = { name: `Eli Employee ${RUN}`, username: `eli.${RUN}` };
+const manager = { name: `Mia Manager ${RUN}`, handle: `mia.${RUN}` };
+const employee = { name: `Eli Employee ${RUN}`, handle: `eli.${RUN}` };
 const projectName = `E2E rollout ${RUN}`;
 
 try {
@@ -103,10 +104,10 @@ try {
   });
 
   await step('admin creates a manager and an employee', async () => {
-    manager.password = await addPerson(page, { ...manager, role: 'manager', salary: 130000 });
-    employee.password = await addPerson(page, {
+    Object.assign(manager, await addPerson(page, { ...manager, role: 'manager', salary: 130000 }));
+    Object.assign(employee, await addPerson(page, {
       ...employee, role: 'employee', salary: 104000, managerName: manager.name,
-    });
+    }));
     await page.getByRole('cell', { name: new RegExp(employee.name) }).waitFor();
   });
 
@@ -133,6 +134,7 @@ try {
     await page.getByRole('button', { name: 'Add milestone' }).click();
     let dialog = page.getByRole('dialog');
     await dialog.getByLabel('Title').fill('Pilot sites');
+    await dialog.getByLabel('Completion criteria').fill('Three pilot sites live');
     await dialog.getByLabel('End date').fill(isoDay(30));
     await dialog.getByRole('button', { name: 'Add milestone' }).click();
     await page.getByRole('heading', { name: 'Pilot sites' }).waitFor();
@@ -146,7 +148,7 @@ try {
     await signOut(page);
   });
 
-  await step('employee logs today, sees no budget, and cannot open People', async () => {
+  await step('employee logs today, sees no budget or People, and sees their team', async () => {
     await signIn(page, employee.username, employee.password);
     await page.getByText('Pilot sites', { exact: false }).first().waitFor();
     await page.getByRole('button', { name: 'Log hours' }).click();
@@ -159,6 +161,11 @@ try {
 
     await page.goto(`${BASE}/people`);
     await page.getByRole('heading', { name: 'Page not found' }).waitFor();
+
+    await page.getByRole('link', { name: 'My team' }).click();
+    await page.getByText(manager.name, { exact: true }).waitFor();
+    await page.getByText(`${employee.name} (you)`).waitFor();
+    assert.equal(await page.getByText('Salary').count(), 0, 'teammates must not show salaries');
     await signOut(page);
   });
 

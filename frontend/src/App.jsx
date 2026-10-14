@@ -12,6 +12,7 @@ import PeoplePage from './pages/PeoplePage.jsx';
 import TimePage from './pages/TimePage.jsx';
 import AuditLogPage from './pages/AuditLogPage.jsx';
 import ProfilePage from './pages/ProfilePage.jsx';
+import MyTeamPage from './pages/MyTeamPage.jsx';
 import NotFoundPage from './pages/NotFoundPage.jsx';
 
 /**
@@ -23,6 +24,7 @@ const ROUTES = [
   { path: '/projects', component: ProjectsPage },
   { path: '/projects/:id', component: ProjectDetailPage },
   { path: '/people', component: PeoplePage, roles: ['admin', 'manager'] },
+  { path: '/team', component: MyTeamPage, roles: ['employee'] },
   { path: '/time', component: TimePage },
   { path: '/audit', component: AuditLogPage, roles: ['admin'] },
   { path: '/profile', component: ProfilePage },

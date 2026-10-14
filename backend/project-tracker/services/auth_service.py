@@ -7,7 +7,7 @@ from models.entities import User, user_from_row
 from models.schemas import PasswordChange, ProfileUpdate
 from repositories.audit_repository import AuditRepository
 from repositories.user_repository import UserRepository
-from services.users_service import ensure_unique, serialize_user
+from services.users_service import ensure_unique_email, serialize_user
 
 
 def _tokens(row: dict) -> dict:
@@ -29,6 +29,15 @@ def login(db: Database, username: str, password: str) -> dict:
     user = user_from_row(row)
     AuditRepository(db).add(user, "login", "user", user.id, f"{user.name} signed in")
     return _tokens(row)
+
+
+def logout(db: Database, user: User) -> None:
+    """Record a sign-out. The browser then forgets its tokens.
+
+    Tokens are stateless, so the access token stays valid until it expires
+    (30 minutes); this entry records that the person chose to sign out.
+    """
+    AuditRepository(db).add(user, "logout", "user", user.id, f"{user.name} signed out")
 
 
 def verify(password: str, row: dict) -> bool:
@@ -64,8 +73,8 @@ def update_profile(db: Database, user: User, body: ProfileUpdate) -> dict:
     before = users.find_by_id(user.id)
     name = body.name or before["name"]
     email = body.email or before["email"]
-    ensure_unique(users, None, email, user.id)
-    users.update_user(user.id, name, email, before["username"], before["role"])
+    ensure_unique_email(users, email, user.id)
+    users.update_user(user.id, name, email, before["role"])
     after = users.find_by_id(user.id)
     AuditRepository(db).add(user, "update", "user", user.id, "Updated own profile", before, after)
     return serialize_user(after, user)

@@ -9,9 +9,6 @@ export const required = (value) => (value === undefined || value === null || Str
 export const email = (value) => (value && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value)
   ? 'Enter a valid email address' : '');
 
-export const username = (value) => (value && !/^[A-Za-z0-9._-]{3,40}$/.test(value)
-  ? "Use 3-40 letters, numbers, '.', '-' or '_'" : '');
-
 export const nonNegative = (value) => (value !== '' && value !== undefined && (Number.isNaN(Number(value)) || Number(value) < 0)
   ? 'Enter a number of 0 or more' : '');
 
@@ -32,3 +29,15 @@ export const hoursInDay = (value) => {
 
 /** Run several checks and return the first message. */
 export const first = (...messages) => messages.find(Boolean) || '';
+
+/**
+ * A milestone must start after every milestone it depends on: after the day a
+ * predecessor was completed, or after its planned end if it isn't done yet.
+ */
+export const readyAfter = (milestone) => (milestone.completed_at
+  ? milestone.completed_at.slice(0, 10) : milestone.end_date);
+
+export const startsAfterPredecessors = (start, predecessors) => {
+  const blocking = predecessors.find((p) => start && start <= readyAfter(p));
+  return blocking ? `Must be after ${blocking.title} ends (${readyAfter(blocking)})` : '';
+};

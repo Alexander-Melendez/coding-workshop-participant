@@ -83,7 +83,13 @@ export default function ProjectFormModal({ project, onClose, onSaved }) {
     >
       <form className="form" onSubmit={form.handleSubmit} noValidate>
         <Field label="Title" required maxLength={150} {...form.field('title')} />
-        <Field label="Description" as="textarea" maxLength={2000} {...form.field('description')} />
+        <Field
+          label="Description"
+          as="textarea"
+          maxLength={2000}
+          hint="The full details: what the work is, where to find it and how to do it. Each milestone then says what counts as done."
+          {...form.field('description')}
+        />
         <div className="form-row">
           <Field label="Start date" type="date" required {...form.field('start_date')} />
           <Field label="End date" type="date" required {...form.field('end_date')} />

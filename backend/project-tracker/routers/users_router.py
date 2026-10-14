@@ -14,6 +14,7 @@ router = APIRouter(prefix="/users", tags=["Users"])
 
 admin_only = require_roles(["admin"])
 staff = require_roles(["admin", "manager"])
+employee_only = require_roles(["employee"])
 
 
 @router.get("")
@@ -22,6 +23,13 @@ def list_users(search: str | None = None, role: Literal["admin", "manager", "emp
                user: User = Depends(staff)):
     with transaction() as db:
         return users_service.list_users(db, user, search, role, status, manager_id)
+
+
+@router.get("/my-team")
+def my_team(user: User = Depends(employee_only)):
+    """For employees: their manager and teammates (contact details only)."""
+    with transaction() as db:
+        return users_service.my_team(db, user)
 
 
 @router.post("", status_code=201)

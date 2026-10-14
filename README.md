@@ -1,5 +1,7 @@
 # Coding Workshop
 
+> **Hexpath PT, ACME's project tracker:** see [PROJECT.md](./PROJECT.md) for how to run, test and deploy the app, its architecture, assumptions and trade-offs.
+
 The goal of this coding workshop is to enable and assess the hands-on skills
 of participants through development of a practical technical solution that
 solves a theoretical business problem.

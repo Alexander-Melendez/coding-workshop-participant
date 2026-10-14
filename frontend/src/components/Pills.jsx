@@ -11,13 +11,14 @@ HealthPill.propTypes = { health: PropTypes.oneOf(['white', 'red', 'green']).isRe
 
 const MILESTONE_TONES = { not_started: 'white', in_progress: 'blue', complete: 'green' };
 
-/** Milestone status, red when overdue. */
-export function MilestonePill({ status, overdue }) {
-  if (overdue) return <span className="pill pill--red">Overdue</span>;
+/** Milestone status: red when overdue, slate while waiting on another milestone. */
+export function MilestonePill({ status, overdue, waiting }) {
+  if (status !== 'complete' && overdue) return <span className="pill pill--red">Overdue</span>;
+  if (status !== 'complete' && waiting) return <span className="pill pill--slate">Waiting</span>;
   return <span className={`pill pill--${MILESTONE_TONES[status]}`}>{statusLabel(status)}</span>;
 }
 
-MilestonePill.propTypes = { status: PropTypes.string.isRequired, overdue: PropTypes.bool };
+MilestonePill.propTypes = { status: PropTypes.string.isRequired, overdue: PropTypes.bool, waiting: PropTypes.bool };
 
 /** Role badge. */
 export function RolePill({ role }) {

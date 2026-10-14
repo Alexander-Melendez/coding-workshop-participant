@@ -25,7 +25,7 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message
 logger = logging.getLogger("project-tracker")
 
 app = FastAPI(
-    title="ACME Project Tracker API",
+    title="Hexpath PT API",
     description="Projects, milestones, people, time and budgets. Use **Authorize** with a token from /auth/login.",
     version="1.0.0",
     docs_url=f"{config.API_PREFIX}/docs",

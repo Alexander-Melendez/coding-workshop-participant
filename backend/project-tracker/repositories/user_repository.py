@@ -68,9 +68,9 @@ class UserRepository:
             (user_id, title, salary, manager_id),
         )
 
-    def update_user(self, user_id: int, name: str, email: str, username: str, role: str) -> None:
-        self.db.run("UPDATE users SET name = %s, email = %s, username = %s, role = %s WHERE id = %s",
-                    (name, email, username, role, user_id))
+    def update_user(self, user_id: int, name: str, email: str, role: str) -> None:
+        self.db.run("UPDATE users SET name = %s, email = %s, role = %s WHERE id = %s",
+                    (name, email, role, user_id))
 
     def update_employee(self, user_id: int, title: str | None, salary, manager_id: int | None) -> None:
         self.db.run("UPDATE employees SET title = %s, salary = %s, manager_id = %s WHERE user_id = %s",

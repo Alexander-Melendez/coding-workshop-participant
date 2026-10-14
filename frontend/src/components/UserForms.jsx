@@ -5,7 +5,7 @@ import Modal from './Modal.jsx';
 import { FormError } from './States.jsx';
 import { useApi, useForm } from '../lib/hooks.js';
 import {
-  email, first, nonNegative, required, username,
+  email, first, nonNegative, required,
 } from '../lib/validators.js';
 import { createUser, listUsers, updateUser } from '../services/tracker.js';
 
@@ -45,7 +45,8 @@ TemporaryPassword.propTypes = {
 /**
  * Create a user (admin) or edit one. Which fields appear depends on the
  * signed-in role: managers edit name, email, job title and salary of their team;
- * admins edit everything. Job title, salary and manager only apply to employees.
+ * admins edit everything except the username, which the server generates.
+ * Job title, salary and manager only apply to employees.
  */
 export default function UserFormModal({
   target, viewerRole, viewerId, onClose, onSaved,
@@ -59,7 +60,6 @@ export default function UserFormModal({
   const form = useForm(
     {
       name: target?.name ?? '',
-      username: target?.username ?? '',
       email: target?.email ?? '',
       role: target?.role ?? 'employee',
       title: target?.title ?? '',
@@ -68,7 +68,6 @@ export default function UserFormModal({
     },
     (v) => ({
       name: required(v.name),
-      username: isAdmin ? first(required(v.username), username(v.username)) : '',
       email: first(required(v.email), email(v.email)),
       salary: nonNegative(v.salary),
     }),
@@ -80,7 +79,6 @@ export default function UserFormModal({
         body.salary = v.salary === '' ? 0 : Number(v.salary);
       }
       if (isAdmin) {
-        body.username = v.username.trim();
         if (canEditRole) body.role = v.role;
         if (isEmployee) body.manager_id = v.manager_id ? Number(v.manager_id) : null;
       }
@@ -97,9 +95,9 @@ export default function UserFormModal({
     return (
       <Modal title={`${created.user.name} can now sign in`} onClose={() => onSaved(created.user)}>
         <p className="small">
-          {`Username `}
-          <strong>{created.user.username}</strong>
-          {`, ID ${created.user.display_id}.`}
+          {'Username '}
+          <strong data-testid="new-username">{created.user.username}</strong>
+          {` (or their email), ID ${created.user.display_id}.`}
         </p>
         <TemporaryPassword name={created.user.name} password={created.temporary_password} onDone={() => onSaved(created.user)} />
       </Modal>
@@ -109,7 +107,7 @@ export default function UserFormModal({
   return (
     <Modal
       title={editing ? `Edit ${target.name}` : 'Add a person'}
-      description={editing ? undefined : 'They get a random 6-character password to sign in with.'}
+      description={editing ? undefined : 'We generate a random 6-character username and password for them to sign in with.'}
       onClose={onClose}
       wide
     >
@@ -120,7 +118,7 @@ export default function UserFormModal({
         </div>
         {isAdmin && (
           <div className="form-row">
-            <Field label="Username" required maxLength={40} autoComplete="off" hint="Used to sign in" {...form.field('username')} />
+            {editing && <Field label="Username" name="username" value={target.username} readOnly hint="Generated when the account was made" />}
             <Field
               label="Role"
               as="select"

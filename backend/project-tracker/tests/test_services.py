@@ -3,7 +3,9 @@
 from datetime import timedelta
 
 import pytest
+from pydantic import ValidationError
 
+import security
 from models.schemas import (
     AssignmentCreate,
     AssignmentUpdate,
@@ -28,6 +30,8 @@ from services import (
     time_service,
     users_service,
 )
+import db as database
+from repositories.user_repository import UserRepository
 from tests.conftest import call, days, fails, new_user, who
 
 
@@ -57,6 +61,13 @@ class TestAuth:
         logs = call(audit_service.list_audit_log, "login_failed", None, None, None, None, 50, 0)
         assert logs["total"] == 1
 
+    def test_logout_is_audited(self, org):
+        call(auth_service.logout, who(org["e1"]))
+        logs = call(audit_service.list_audit_log, "logout", None, None, None, None, 50, 0)
+        assert logs["total"] == 1
+        entry = logs["items"][0]
+        assert entry["actor_id"] == org["e1"] and entry["summary"] == "Eve Employee signed out"
+
     def test_tokens(self, clean):
         tokens = call(auth_service.login, "admin", "Admin@123")
         assert call(auth_service.current_user, tokens["access_token"]).role == "admin"
@@ -66,10 +77,10 @@ class TestAuth:
 
     def test_archived_user_is_locked_out(self, org):
         password = call(users_service.reset_password, who(1), org["e1"])["temporary_password"]
-        token = call(auth_service.login, "eve.employee", password)["access_token"]
+        token = call(auth_service.login, "eve.employee@acme.example", password)["access_token"]
         call(users_service.archive_user, who(1), org["e1"])
         fails(401, auth_service.current_user, token)          # existing session ends immediately
-        fails(401, auth_service.login, "eve.employee", password)
+        fails(401, auth_service.login, "eve.employee@acme.example", password)
 
     def test_profile_and_password(self, org):
         eve = who(org["e1"])
@@ -83,23 +94,44 @@ class TestAuth:
 # People and permissions
 # ===========================================================================
 class TestUsers:
-    def test_create_gives_six_char_password(self, clean):
+    def test_create_generates_username_and_password(self, clean):
         result = call(users_service.create_user, who(1), UserCreate(
-            name="New Hire", username="new.hire", email="new@acme.example", role="employee", salary=52000))
+            name="New Hire", email="new@acme.example", role="employee", salary=52000))
+        username = result["user"]["username"]
+        assert len(username) == 6 and set(username) <= set(security.USERNAME_CHARACTERS)
         assert len(result["temporary_password"]) == 6
         assert result["user"]["display_id"].startswith("E") and float(result["user"]["hourly_rate"]) == 25.0
-        assert call(auth_service.login, "new.hire", result["temporary_password"])
+        assert call(auth_service.login, username, result["temporary_password"])
+        assert call(auth_service.login, "new@acme.example", result["temporary_password"])  # email works too
 
-    def test_duplicates(self, org):
+    def test_username_retries_on_collision(self, org, monkeypatch):
+        taken = call(users_service.get_user, who(1), org["e1"])["username"]
+        picks = iter([taken, taken, "fresh9"])
+        monkeypatch.setattr(security, "generate_username", lambda: next(picks))
+        result = call(users_service.create_user, who(1), UserCreate(name="X", email="x@acme.example", role="manager"))
+        assert result["user"]["username"] == "fresh9"
+
+    def test_username_gives_up_after_many_collisions(self, org, monkeypatch):
+        taken = call(users_service.get_user, who(1), org["e1"])["username"]
+        monkeypatch.setattr(security, "generate_username", lambda: taken)
+        fails(409, users_service.create_user, who(1), UserCreate(name="X", email="x@acme.example", role="manager"))
+
+    def test_usernames_cannot_be_chosen_or_changed(self, org):
+        with pytest.raises(ValidationError):
+            UserCreate(name="X", username="eve", email="x@acme.example", role="employee")
+        with pytest.raises(ValidationError):
+            UserUpdate(username="eve")
+
+    def test_duplicate_email(self, org):
         err = fails(409, users_service.create_user, who(1), UserCreate(
-            name="X", username="EVE.employee", email="Eve.Employee@acme.example", role="employee"))
-        assert set(err.fields) == {"username", "email"}
+            name="X", email="Eve.Employee@acme.example", role="employee"))
+        assert set(err.fields) == {"email"}
 
     def test_only_employees_have_managers(self, org):
         fails(400, users_service.create_user, who(1), UserCreate(
-            name="Bad", username="bad", email="b@x.io", role="manager", manager_id=org["m1"]))
+            name="Bad", email="b@x.io", role="manager", manager_id=org["m1"]))
         fails(400, users_service.create_user, who(1), UserCreate(
-            name="Bad", username="bad", email="b@x.io", role="employee", manager_id=org["e1"]))
+            name="Bad", email="b@x.io", role="employee", manager_id=org["e1"]))
 
     def test_manager_sees_only_own_team_and_salaries(self, org):
         team = call(users_service.list_users, who(org["m1"]), None, None, "active", None)
@@ -142,12 +174,40 @@ class TestUsers:
 
     def test_reset_password(self, org):
         password = call(users_service.reset_password, who(1), org["e1"])["temporary_password"]
-        assert call(auth_service.login, "eve.employee", password)
+        assert call(auth_service.login, "eve.employee@acme.example", password)
 
 
 # ===========================================================================
 # Projects
 # ===========================================================================
+class TestMyTeam:
+    def test_employee_sees_manager_and_teammates_only(self, org):
+        team = call(users_service.my_team, who(org["e1"]))
+        assert team["manager"]["name"] == "Maria Manager" and team["manager"]["display_id"].startswith("M")
+        assert {(t["name"], t["is_me"]) for t in team["teammates"]} == {("Eve Employee", True), ("Ed Second", False)}
+        # contact details only: no salary, username or workload
+        assert set(team["teammates"][0]) == {"id", "display_id", "role", "name", "email", "title", "is_me"}
+
+    def test_archived_teammates_are_hidden(self, org):
+        call(users_service.archive_user, who(1), org["e2"])
+        names = {t["name"] for t in call(users_service.my_team, who(org["e1"]))["teammates"]}
+        assert names == {"Eve Employee"}
+
+    def test_employee_without_manager(self, org):
+        call(users_service.update_user, who(1), org["e1"], UserUpdate(manager_id=None))
+        assert call(users_service.my_team, who(org["e1"])) == {"manager": None, "teammates": []}
+
+    def test_can_view_user_rules(self, org):
+        eve = who(org["e1"])
+        with database.transaction() as db:
+            users = UserRepository(db)
+            assert eve.can_view_user(users.find_by_id(org["m1"]))      # her manager
+            assert eve.can_view_user(users.find_by_id(org["e2"]))      # teammate
+            assert not eve.can_view_user(users.find_by_id(org["e3"]))  # another manager's team
+            assert not eve.can_view_user(users.find_by_id(org["m2"]))  # another manager
+            assert not eve.can_view_salary(users.find_by_id(org["e2"]))
+
+
 class TestProjects:
     def test_manager_must_be_a_manager(self, org):
         err = fails(400, projects_service.create_project, who(1), ProjectCreate(
@@ -227,13 +287,13 @@ class TestProjects:
 class TestMilestones:
     def test_must_fit_project(self, org):
         err = fails(400, milestones_service.create_milestone, who(org["m1"]), org["project"],
-                    MilestoneCreate(title="Too long", start_date=days(0), end_date=days(999)))
+                    MilestoneCreate(title="Too long", description="x", start_date=days(0), end_date=days(999)))
         assert "end_date" in err.fields
 
     def test_status_comes_from_dates_and_timestamp(self, org):
         m1 = who(org["m1"])
         future = call(milestones_service.create_milestone, m1, org["project"],
-                      MilestoneCreate(title="Later", start_date=days(40), end_date=days(60)))
+                      MilestoneCreate(title="Later", description="x", start_date=days(40), end_date=days(60)))
         assert future["status"] == "not_started"
         assert call(milestones_service.get_milestone, m1, org["milestone"])["status"] == "in_progress"
         done = call(milestones_service.complete_milestone, m1, org["milestone"])
@@ -252,7 +312,7 @@ class TestMilestones:
     def test_one_milestone_at_a_time(self, org):
         m1 = who(org["m1"])
         second = call(milestones_service.create_milestone, m1, org["project"],
-                      MilestoneCreate(title="Next 200", start_date=days(0), end_date=days(60)))
+                      MilestoneCreate(title="Next 200", description="Next 200 retired", start_date=days(0), end_date=days(60)))
         assign(org, "e1", -10, 10)
         err = fails(409, milestones_service.create_assignment, m1, second["id"],
                     AssignmentCreate(user_id=org["e1"], start_date=days(5), end_date=days(20)))
@@ -262,7 +322,7 @@ class TestMilestones:
     def test_moving_an_assignment_onto_another_is_blocked(self, org):
         m1 = who(org["m1"])
         second = call(milestones_service.create_milestone, m1, org["project"],
-                      MilestoneCreate(title="Next 200", start_date=days(0), end_date=days(60)))
+                      MilestoneCreate(title="Next 200", description="Next 200 retired", start_date=days(0), end_date=days(60)))
         assign(org, "e1", -10, 10)
         later = assign(org, "e1", 11, 20, milestone=second["id"])
         fails(409, milestones_service.update_assignment, m1, later["id"], AssignmentUpdate(start_date=days(5)))
@@ -290,6 +350,97 @@ class TestMilestones:
         err = fails(400, milestones_service.update_milestone, who(org["m1"]), org["milestone"],
                     MilestoneUpdate(start_date=days(-10)))
         assert "logged" in err.message
+
+
+def milestone(org, title, start, end, depends_on=(), by="m1"):
+    return call(milestones_service.create_milestone, who(org[by]), org["project"], MilestoneCreate(
+        title=title, description=f"{title} done", start_date=days(start), end_date=days(end),
+        depends_on=list(depends_on)))
+
+
+class TestDependencies:
+    """org["milestone"] ("First 200 servers") runs from day -30 to day 30."""
+
+    def test_description_is_required(self, org):
+        with pytest.raises(ValueError):
+            MilestoneCreate(title="No criteria", start_date=days(0), end_date=days(5))
+        with pytest.raises(ValueError):
+            MilestoneUpdate(description="")
+        err = fails(400, milestones_service.update_milestone, who(org["m1"]), org["milestone"],
+                    MilestoneUpdate(description=None))
+        assert "description" in err.fields
+
+    def test_shows_what_it_waits_on(self, org):
+        nxt = milestone(org, "Next 200", 31, 60, [org["milestone"]])
+        assert nxt["depends_on"] == [{"id": org["milestone"], "title": "First 200 servers", "complete": False}]
+        assert nxt["waiting_on"] == ["First 200 servers"]
+        call(milestones_service.complete_milestone, who(org["m1"]), org["milestone"])
+        assert call(milestones_service.get_milestone, who(org["m1"]), nxt["id"])["waiting_on"] == []
+
+    def test_must_start_after_predecessor_ends(self, org):
+        err = fails(400, milestones_service.create_milestone, who(org["m1"]), org["project"], MilestoneCreate(
+            title="Too early", description="x", start_date=days(30), end_date=days(60), depends_on=[org["milestone"]]))
+        assert "start_date" in err.fields
+
+    def test_finishing_early_lets_the_next_start_early(self, org):
+        call(milestones_service.complete_milestone, who(org["m1"]), org["milestone"])
+        milestone(org, "Next 200", 1, 60, [org["milestone"]])   # planned end was day 30
+
+    def test_cannot_complete_before_predecessors(self, org):
+        nxt = milestone(org, "Next 200", 31, 60, [org["milestone"]])
+        err = fails(409, milestones_service.complete_milestone, who(org["m1"]), nxt["id"])
+        assert "First 200 servers" in err.message
+        call(milestones_service.complete_milestone, who(org["m1"]), org["milestone"])
+        assert call(milestones_service.complete_milestone, who(org["m1"]), nxt["id"])["status"] == "complete"
+
+    def test_no_time_until_predecessors_complete(self, org):
+        plan = milestone(org, "Plan", -60, -40)
+        build = milestone(org, "Build", -39, -31, [plan["id"]])
+        assign(org, "e1", -39, -31, milestone=build["id"])
+        err = fails(400, time_service.create_entry, who(org["e1"]),
+                    TimeEntryCreate(milestone_id=build["id"], work_date=days(-35), hours=8))
+        assert "Plan" in err.message
+        call(milestones_service.complete_milestone, who(org["m1"]), plan["id"])
+        log(org, "e1", -35, milestone=build["id"])
+
+    def test_waits_on_every_predecessor(self, org):
+        other = milestone(org, "Permits", -30, 30)
+        both = milestone(org, "Final", 31, 60, [org["milestone"], other["id"]])
+        call(milestones_service.complete_milestone, who(org["m1"]), org["milestone"])
+        fails(409, milestones_service.complete_milestone, who(org["m1"]), both["id"])
+
+    def test_loops_are_rejected(self, org):
+        b = milestone(org, "B", 31, 60, [org["milestone"]])
+        c = milestone(org, "C", 61, 90, [b["id"]])
+        err = fails(400, milestones_service.update_milestone, who(org["m1"]), org["milestone"],
+                    MilestoneUpdate(depends_on=[c["id"]]))
+        assert "loop" in err.message
+
+    def test_bad_links(self, org):
+        fails(400, milestones_service.update_milestone, who(org["m1"]), org["milestone"],
+              MilestoneUpdate(depends_on=[org["milestone"]]))
+        elsewhere = call(projects_service.create_project, who(1), ProjectCreate(
+            title="Other", start_date=days(-60), end_date=days(300), budget=1000, manager_id=org["m1"]))
+        foreign = call(milestones_service.create_milestone, who(org["m1"]), elsewhere["id"], MilestoneCreate(
+            title="Theirs", description="x", start_date=days(-60), end_date=days(-50)))
+        err = fails(400, milestones_service.create_milestone, who(org["m1"]), org["project"], MilestoneCreate(
+            title="Mixed", description="x", start_date=days(40), end_date=days(50), depends_on=[foreign["id"]]))
+        assert "depends_on" in err.fields
+
+    def test_predecessor_cannot_run_into_dependent(self, org):
+        milestone(org, "Next 200", 31, 60, [org["milestone"]])
+        err = fails(400, milestones_service.update_milestone, who(org["m1"]), org["milestone"],
+                    MilestoneUpdate(end_date=days(40)))
+        assert "Next 200" in err.message and "end_date" in err.fields
+
+    def test_removing_and_auditing_links(self, org):
+        nxt = milestone(org, "Next 200", 31, 60, [org["milestone"]])
+        fails(409, milestones_service.delete_milestone, who(org["m1"]), org["milestone"])
+        updated = call(milestones_service.update_milestone, who(org["m1"]), nxt["id"], MilestoneUpdate(depends_on=[]))
+        assert updated["depends_on"] == []
+        call(milestones_service.delete_milestone, who(org["m1"]), org["milestone"])
+        logs = call(audit_service.list_audit_log, "update", "milestone", None, None, None, 50, 0)
+        assert logs["items"][0]["changes"]["after"]["depends_on"] == []
 
 
 # ===========================================================================

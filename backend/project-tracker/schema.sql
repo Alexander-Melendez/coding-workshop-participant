@@ -1,4 +1,4 @@
--- ACME Project Tracker schema.
+-- Hexpath PT (ACME's project tracker) schema.
 -- db.py runs this file once, when the database has no "users" table yet.
 -- To start over during development, run scripts/reset_db.sql first.
 
@@ -50,6 +50,13 @@ CREATE TABLE "milestones" (
   "end_date" date NOT NULL,
   "completed_at" timestamp,
   "created_at" timestamp NOT NULL DEFAULT now()
+);
+
+-- "milestone_id can't start until depends_on_id is complete"
+CREATE TABLE "milestone_dependencies" (
+  "milestone_id" integer NOT NULL,
+  "depends_on_id" integer NOT NULL,
+  PRIMARY KEY ("milestone_id", "depends_on_id")
 );
 
 CREATE TABLE "milestone_assignments" (
@@ -108,6 +115,10 @@ ALTER TABLE "employees" ADD FOREIGN KEY ("manager_id") REFERENCES "users" ("id")
 ALTER TABLE "projects" ADD FOREIGN KEY ("manager_id") REFERENCES "users" ("id");
 
 ALTER TABLE "milestones" ADD FOREIGN KEY ("project_id") REFERENCES "projects" ("id");
+
+ALTER TABLE "milestone_dependencies" ADD FOREIGN KEY ("milestone_id") REFERENCES "milestones" ("id");
+
+ALTER TABLE "milestone_dependencies" ADD FOREIGN KEY ("depends_on_id") REFERENCES "milestones" ("id");
 
 ALTER TABLE "milestone_assignments" ADD FOREIGN KEY ("milestone_id") REFERENCES "milestones" ("id");
 
